@@ -7,7 +7,7 @@ from werkzeug.utils import secure_filename
 from sentence_transformers import SentenceTransformer
 
 # Load AI model (local)
-model = SentenceTransformer("model/all-MiniLM-L6-v2")
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
 # AI modules
 from clip_engine import get_embedding, get_text_embedding, get_similarity
