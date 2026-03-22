@@ -1,47 +1,90 @@
-def reconnect_db():
-    global db, cursor
-    try:
-        db.ping(reconnect=True, attempts=3, delay=2)
-    except:
-        import mysql.connector
-        db = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="root",   # change if needed
-            database="lostfound_ai"
-        )
-        cursor = db.cursor(dictionary=True)
-
-from flask import Flask, render_template, request, redirect, session, jsonify
-import mysql.connector
+import sqlite3
 import os
 import json
-from werkzeug.utils import secure_filename
+
 from flask import Flask, render_template, request, redirect, session, jsonify
+from werkzeug.utils import secure_filename
 from sentence_transformers import SentenceTransformer
 
+# Load AI model (local)
 model = SentenceTransformer("model/all-MiniLM-L6-v2", local_files_only=True)
+
 # AI modules
 from clip_engine import get_embedding, get_text_embedding, get_similarity
 
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
 
+# Upload folder
 UPLOAD_FOLDER = "static/uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
+# Ensure folder exists (IMPORTANT for Render)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# DATABASE CONNECTION
-db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="root",
-    database="lostfound_ai"
+# ================= DATABASE =================
+def connect_db():
+    conn = sqlite3.connect("database.db", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+db = connect_db()
+cursor = db.cursor()
+
+# ================= TABLES =================
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prn TEXT,
+    password TEXT,
+    name TEXT
 )
+""")
 
-cursor = db.cursor(dictionary=True, buffered=True)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    type TEXT,
+    title TEXT,
+    description TEXT,
+    location TEXT,
+    date TEXT,
+    image TEXT,
+    embedding TEXT,
+    status TEXT
+)
+""")
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lost_item_id INTEGER,
+    found_item_id INTEGER,
+    match_score INTEGER,
+    status TEXT
+)
+""")
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER,
+    claimer_prn TEXT,
+    status TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER,
+    sender_prn TEXT,
+    message TEXT
+)
+""")
+
+db.commit()
 @app.route("/")
 def login_page():
     return render_template("login.html")
@@ -54,7 +97,7 @@ def login():
 
     cursor.execute("""
     SELECT * FROM users
-    WHERE prn=%s AND password=%s
+    WHERE prn=? AND password=?
     """, (prn, password))
 
     user = cursor.fetchone()
@@ -67,11 +110,9 @@ def login():
     session["name"] = user["name"]
 
     return redirect("/dashboard")
-
 @app.route("/dashboard")
 def dashboard():
     reconnect_db()
-    
 
     if "user_id" not in session:
         return redirect("/")
@@ -79,39 +120,39 @@ def dashboard():
     user_id = session["user_id"]
     user_prn = session["user"]
 
-    # MATCH COUNT (FIXED: no returned items)
+    # MATCH COUNT
     cursor.execute("""
     SELECT COUNT(*) AS total
     FROM matches m
     JOIN items i ON m.lost_item_id = i.id
-    WHERE i.user_id=%s
+    WHERE i.user_id=?
     AND m.status='pending'
     AND i.status='open'
-    """,(user_id,))
+    """, (user_id,))
     
     match_count = cursor.fetchone()["total"]
 
-    # CLAIM REQUESTS (SORTED)
+    # CLAIM REQUESTS
     cursor.execute("""
-    SELECT c.id,c.match_id,m.match_score
+    SELECT c.id, c.match_id, m.match_score
     FROM claims c
-    JOIN matches m ON c.match_id=m.id
-    JOIN items i ON m.found_item_id=i.id
-    WHERE i.user_id=%s 
-    AND c.status='pending'
+    JOIN matches m ON c.match_id = m.id
+    JOIN items i ON m.found_item_id = i.id
+    WHERE i.user_id = ?
+    AND c.status = 'pending'
     ORDER BY m.match_score DESC
-    """,(user_id,))
+    """, (user_id,))
     
     claim_requests = cursor.fetchall()
 
-    # CHAT COUNT (ONLY ACTIVE MATCHES)
+    # CHAT COUNT
     cursor.execute("""
     SELECT COUNT(*) AS total
     FROM messages msg
     JOIN matches m ON msg.match_id = m.id
-    WHERE msg.sender_prn != %s
+    WHERE msg.sender_prn != ?
     AND m.status = 'pending'
-    """,(user_prn,))
+    """, (user_prn,))
     
     message_count = cursor.fetchone()["total"]
 
@@ -122,7 +163,8 @@ def dashboard():
         claim_requests=claim_requests,
         message_count=message_count
     )
-@app.route("/lost", methods=["GET","POST"])
+    
+@app.route("/lost", methods=["GET", "POST"])
 def lost():
     reconnect_db()
 
@@ -131,7 +173,7 @@ def lost():
 
     if request.method == "POST":
 
-        # 🔥 RAW INPUT
+        # RAW INPUT
         raw_text = request.form.get("description")
 
         # LLM (only for title)
@@ -139,7 +181,7 @@ def lost():
 
         title = data["title"]
 
-        # 🔥 IMPORTANT FIX
+        # IMPORTANT FIX
         description = raw_text
 
         location = data["location"] or request.form.get("place")
@@ -159,9 +201,9 @@ def lost():
 
         cursor.execute("""
         INSERT INTO items
-        (user_id,type,title,description,location,date,image,embedding,status)
-        VALUES(%s,'lost',%s,%s,%s,%s,%s,%s,'open')
-        """,(
+        (user_id, type, title, description, location, date, image, embedding, status)
+        VALUES(?, 'lost', ?, ?, ?, ?, ?, ?, 'open')
+        """, (
             session["user_id"],
             title,
             description,
@@ -175,6 +217,8 @@ def lost():
         return redirect("/dashboard")
 
     return render_template("lost.html")
+
+
 @app.route("/view")
 def view_items():
     reconnect_db()
@@ -190,13 +234,16 @@ def view_items():
     FROM items i
     LEFT JOIN matches m
     ON i.id = m.lost_item_id
-    WHERE i.type='lost'
-    AND i.user_id=%s
-    """,(session["user_id"],))
+    WHERE i.type = 'lost'
+    AND i.user_id = ?
+    """, (session["user_id"],))
 
     items = cursor.fetchall()
 
     for item in items:
+
+        # sqlite Row is mutable? NO → convert to dict
+        item = dict(item)
 
         item["claim_status"] = None
 
@@ -205,9 +252,9 @@ def view_items():
             cursor.execute("""
             SELECT status
             FROM claims
-            WHERE match_id=%s AND claimer_prn=%s
+            WHERE match_id = ? AND claimer_prn = ?
             ORDER BY id DESC LIMIT 1
-            """,(item["match_id"], session["user"]))
+            """, (item["match_id"], session["user"]))
 
             claim = cursor.fetchone()
 
@@ -215,13 +262,7 @@ def view_items():
                 item["claim_status"] = claim["status"]
 
     return render_template("view.html", items=items)
-from ai_intake import extract_item_details
-from matching_engine import match_items
-from clip_engine import get_embedding
-from werkzeug.utils import secure_filename
-import os
-import json
-@app.route("/found", methods=["GET","POST"])
+@app.route("/found", methods=["GET", "POST"])
 def found():
     reconnect_db()
 
@@ -230,14 +271,14 @@ def found():
 
     if request.method == "POST":
 
-        # 🔥 RAW INPUT
+        # RAW INPUT
         raw_text = request.form.get("description")
 
         data = extract_item_details(raw_text)
 
         title = data["title"]
 
-        # 🔥 IMPORTANT FIX
+        # IMPORTANT FIX
         description = raw_text
 
         place = data["location"] or request.form.get("place")
@@ -245,48 +286,51 @@ def found():
 
         image_file = request.files.get("image")
 
-        filename = secure_filename(image_file.filename)
-        path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        image_file.save(path)
+        filename = None
+        embedding = None
 
-        embedding = get_embedding(path)
+        # ✅ SAFE IMAGE HANDLING (FIXED CRASH ISSUE)
+        if image_file and image_file.filename != "":
+            filename = secure_filename(image_file.filename)
+            path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            image_file.save(path)
+
+            embedding = get_embedding(path)
 
         cursor.execute("""
         INSERT INTO items
-        (user_id,type,title,description,location,date,image,embedding,status)
-        VALUES(%s,'found',%s,%s,%s,%s,%s,%s,'open')
-        """,(
+        (user_id, type, title, description, location, date, image, embedding, status)
+        VALUES(?, 'found', ?, ?, ?, ?, ?, ?, 'open')
+        """, (
             session["user_id"],
             title,
             description,
             place,
             date_found,
             filename,
-            str(embedding)
+            str(embedding) if embedding else None
         ))
 
         db.commit()
         found_id = cursor.lastrowid
 
-        # 🔥 FETCH LOST ITEMS (LOCATION FILTER)
+        # FETCH LOST ITEMS (LOCATION FILTER)
         cursor.execute("""
         SELECT * FROM items
-        WHERE type='lost'
-        AND status='open'
-        AND location LIKE %s
-        """,(f"%{place}%",))
+        WHERE type = 'lost'
+        AND status = 'open'
+        AND location LIKE ?
+        """, (f"%{place}%",))
 
         lost_items = cursor.fetchall()
 
-        import json
-
         for lost in lost_items:
 
-            # 🔥 PREVENT DUPLICATE MATCH
+            # PREVENT DUPLICATE MATCH
             cursor.execute("""
             SELECT id FROM matches
-            WHERE lost_item_id=%s AND status='pending'
-            """,(lost["id"],))
+            WHERE lost_item_id = ? AND status = 'pending'
+            """, (lost["id"],))
 
             if cursor.fetchone():
                 continue
@@ -311,37 +355,37 @@ def found():
                 "embedding": embedding
             }
 
-            # 🔥 BASE MATCH
+            # BASE MATCH
             score = match_items(lost_data, found_data)
 
-            # 🔥 TEXT BOOST (CRITICAL FIX)
+            # TEXT BOOST
             if description and lost["description"]:
                 if any(word in lost["description"].lower() for word in description.lower().split()):
                     score += 40
 
-            # 🔥 KEYWORD BOOST (earbuds etc.)
+            # KEYWORD BOOST
             if "earbud" in description.lower() and "earbud" in lost["description"].lower():
                 score += 40
 
-            # 🔥 LOCATION BOOST
+            # LOCATION BOOST
             if place and lost["location"]:
                 if place.lower() in lost["location"].lower():
                     score += 10
 
-            # 🔥 DEBUG
+            # DEBUG
             print("--------")
             print("Lost:", lost["description"])
             print("Found:", description)
             print("Score:", score)
             print("--------")
 
-            # 🔥 FINAL THRESHOLD
+            # FINAL THRESHOLD
             if score >= 40:
                 cursor.execute("""
                 INSERT INTO matches
-                (lost_item_id,found_item_id,match_score,status)
-                VALUES(%s,%s,%s,'pending')
-                """,(lost["id"],found_id,score))
+                (lost_item_id, found_item_id, match_score, status)
+                VALUES(?, ?, ?, 'pending')
+                """, (lost["id"], found_id, score))
 
         db.commit()
         return redirect("/dashboard")
@@ -362,29 +406,31 @@ def view_found():
     FROM items i
     LEFT JOIN matches m ON i.id = m.found_item_id
     LEFT JOIN claims c ON m.id = c.match_id
-    WHERE i.user_id=%s
-    AND i.type='found'
-    """,(session["user_id"],))
+    WHERE i.user_id = ?
+    AND i.type = 'found'
+    """, (session["user_id"],))
 
     items = cursor.fetchall()
 
     return render_template("view_found.html", items=items)
+
+
 @app.route("/claim/<int:match_id>")
 def claim(match_id):
 
     if "user" not in session:
         return redirect("/")
 
-    user_prn=session["user"]
+    user_prn = session["user"]
 
     # CHECK DUPLICATE CLAIM
     cursor.execute("""
     SELECT id
     FROM claims
-    WHERE match_id=%s AND claimer_prn=%s
-    """,(match_id,user_prn))
+    WHERE match_id = ? AND claimer_prn = ?
+    """, (match_id, user_prn))
 
-    existing=cursor.fetchone()
+    existing = cursor.fetchone()
 
     if existing:
         return redirect("/view")
@@ -392,15 +438,14 @@ def claim(match_id):
     # CREATE CLAIM
     cursor.execute("""
     INSERT INTO claims
-    (match_id,claimer_prn,status)
-    VALUES(%s,%s,'pending')
-    """,(match_id,user_prn))
+    (match_id, claimer_prn, status)
+    VALUES(?, ?, 'pending')
+    """, (match_id, user_prn))
 
     db.commit()
 
     return redirect(f"/chat/{match_id}")
 
-   
 
 @app.route("/verification/<int:match_id>")
 def verification(match_id):
@@ -409,11 +454,11 @@ def verification(match_id):
         return redirect("/")
 
     cursor.execute("""
-    SELECT i.title,i.description
+    SELECT i.title, i.description
     FROM matches m
-    JOIN items i ON m.found_item_id=i.id
-    WHERE m.id=%s
-    """,(match_id,))
+    JOIN items i ON m.found_item_id = i.id
+    WHERE m.id = ?
+    """, (match_id,))
 
     item = cursor.fetchone()
 
@@ -445,126 +490,127 @@ def submit_verification(match_id):
     cursor.execute("""
     SELECT description
     FROM items
-    WHERE id=(SELECT found_item_id FROM matches WHERE id=%s)
-    """,(match_id,))
+    WHERE id = (SELECT found_item_id FROM matches WHERE id = ?)
+    """, (match_id,))
 
     item = cursor.fetchone()
 
     # AI verification
-    result = verify_claim(item["description"],answers)
+    result = verify_claim(item["description"], answers)
 
     score = result["score"]
 
-    # store score
+    # ⚠️ IMPORTANT: SQLite me column hona chahiye
     cursor.execute("""
     UPDATE matches
-    SET verification_score=%s
-    WHERE id=%s
-    """,(score,match_id))
+    SET verification_score = ?
+    WHERE id = ?
+    """, (score, match_id))
 
     db.commit()
 
     return redirect(f"/chat/{match_id}")
-@app.route("/chat/<int:match_id>", methods=["GET","POST"])
+
+
+@app.route("/chat/<int:match_id>", methods=["GET", "POST"])
 def chat(match_id):
 
     if "user" not in session:
         return redirect("/")
 
-    # 🔥 CHECK MATCH STATUS
+    # CHECK MATCH STATUS
     cursor.execute("""
-    SELECT status FROM matches WHERE id=%s
-    """,(match_id,))
+    SELECT status FROM matches WHERE id = ?
+    """, (match_id,))
     
     match = cursor.fetchone()
 
     if not match:
         return redirect("/dashboard")
 
-    # ❌ BLOCK CHAT IF NOT ACTIVE
+    # BLOCK CHAT IF NOT ACTIVE
     if match["status"] != "pending":
         return "Chat closed (Request Rejected or Completed)"
 
-    # ---------- REST OF YOUR CHAT CODE ----------
-
-    user_prn=session["user"]
+    user_prn = session["user"]
 
     # GET ITEM
     cursor.execute("""
     SELECT i.title
     FROM matches m
-    JOIN items i ON m.lost_item_id=i.id
-    WHERE m.id=%s
-    """,(match_id,))
+    JOIN items i ON m.lost_item_id = i.id
+    WHERE m.id = ?
+    """, (match_id,))
 
-    item=cursor.fetchone()
+    item = cursor.fetchone()
 
     if not item:
         return "Invalid Chat"
 
-    item_name=item["title"]
-
+    item_name = item["title"]
 
     # GET CLAIM
     cursor.execute("""
-    SELECT id,claimer_prn,status
+    SELECT id, claimer_prn, status
     FROM claims
-    WHERE match_id=%s
+    WHERE match_id = ?
     ORDER BY id DESC
     LIMIT 1
-    """,(match_id,))
+    """, (match_id,))
 
-    claim=cursor.fetchone()
+    claim = cursor.fetchone()
 
-    claim_id=None
-    show_buttons=False
+    claim_id = None
+    show_buttons = False
 
     if claim:
-
-        claim_id=claim["id"]
+        claim_id = claim["id"]
 
         # FOUNDER ONLY
-        if claim["claimer_prn"]!=user_prn and claim["status"]=="pending":
-            show_buttons=True
-
+        if claim["claimer_prn"] != user_prn and claim["status"] == "pending":
+            show_buttons = True
 
     # SEND MESSAGE
-    if request.method=="POST":
+    if request.method == "POST":
 
-        msg=request.form["message"]
+        msg = request.form["message"]
 
         cursor.execute("""
         INSERT INTO messages
-        (match_id,sender_prn,message)
-        VALUES(%s,%s,%s)
-        """,(match_id,user_prn,msg))
+        (match_id, sender_prn, message)
+        VALUES(?, ?, ?)
+        """, (match_id, user_prn, msg))
 
         db.commit()
 
         return redirect(f"/chat/{match_id}")
 
-
     # LOAD MESSAGES
     cursor.execute("""
-    SELECT sender_prn,message
+    SELECT sender_prn, message
     FROM messages
-    WHERE match_id=%s
+    WHERE match_id = ?
     ORDER BY id ASC
-    """,(match_id,))
+    """, (match_id,))
 
-    chats=cursor.fetchall()
+    chats = cursor.fetchall()
+
+    # ⚠️ FIX: sqlite row → dict convert
+    updated_chats = []
 
     for c in chats:
+        c = dict(c)
 
-        if c["sender_prn"]==user_prn:
-            c["side"]="me"
+        if c["sender_prn"] == user_prn:
+            c["side"] = "me"
         else:
-            c["side"]="other"
+            c["side"] = "other"
 
+        updated_chats.append(c)
 
     return render_template(
         "chat.html",
-        chats=chats,
+        chats=updated_chats,
         item_name=item_name,
         show_approval_buttons=show_buttons,
         claim_id=claim_id
@@ -577,8 +623,8 @@ def approve(claim_id):
 
     # GET MATCH ID
     cursor.execute("""
-    SELECT match_id FROM claims WHERE id=%s
-    """,(claim_id,))
+    SELECT match_id FROM claims WHERE id = ?
+    """, (claim_id,))
     
     claim = cursor.fetchone()
 
@@ -589,20 +635,21 @@ def approve(claim_id):
 
     # UPDATE CLAIM
     cursor.execute("""
-    UPDATE claims SET status='approved'
-    WHERE id=%s
-    """,(claim_id,))
+    UPDATE claims SET status = 'approved'
+    WHERE id = ?
+    """, (claim_id,))
 
-    # KEEP MATCH ACTIVE (IMPORTANT CHANGE)
+    # KEEP MATCH ACTIVE
     cursor.execute("""
-    UPDATE matches SET status='pending'
-    WHERE id=%s
-    """,(match_id,))
+    UPDATE matches SET status = 'pending'
+    WHERE id = ?
+    """, (match_id,))
 
     db.commit()
 
-    # 🔥 REDIRECT TO CHAT (FIX)
     return redirect(f"/chat/{match_id}")
+
+
 @app.route("/reject/<int:claim_id>")
 def reject(claim_id):
 
@@ -610,8 +657,8 @@ def reject(claim_id):
         return redirect("/")
 
     cursor.execute("""
-    SELECT match_id FROM claims WHERE id=%s
-    """,(claim_id,))
+    SELECT match_id FROM claims WHERE id = ?
+    """, (claim_id,))
     
     claim = cursor.fetchone()
 
@@ -620,21 +667,22 @@ def reject(claim_id):
 
     match_id = claim["match_id"]
 
-    # 🔥 CLAIM REJECT
+    # CLAIM REJECT
     cursor.execute("""
-    UPDATE claims SET status='rejected'
-    WHERE id=%s
-    """,(claim_id,))
+    UPDATE claims SET status = 'rejected'
+    WHERE id = ?
+    """, (claim_id,))
 
-    # 🔥 MATCH CLOSE
+    # MATCH CLOSE
     cursor.execute("""
-    UPDATE matches SET status='closed'
-    WHERE id=%s
-    """,(match_id,))
+    UPDATE matches SET status = 'closed'
+    WHERE id = ?
+    """, (match_id,))
 
     db.commit()
 
     return redirect("/dashboard")
+
 
 @app.route("/item-returned/<int:match_id>")
 def item_returned(match_id):
@@ -643,9 +691,9 @@ def item_returned(match_id):
         return redirect("/")
 
     cursor.execute("""
-    SELECT lost_item_id,found_item_id
-    FROM matches WHERE id=%s
-    """,(match_id,))
+    SELECT lost_item_id, found_item_id
+    FROM matches WHERE id = ?
+    """, (match_id,))
 
     match = cursor.fetchone()
 
@@ -654,30 +702,32 @@ def item_returned(match_id):
 
     # UPDATE ITEMS
     cursor.execute("""
-    UPDATE items SET status='returned'
-    WHERE id=%s
-    """,(match["lost_item_id"],))
+    UPDATE items SET status = 'returned'
+    WHERE id = ?
+    """, (match["lost_item_id"],))
 
     cursor.execute("""
-    UPDATE items SET status='returned'
-    WHERE id=%s
-    """,(match["found_item_id"],))
+    UPDATE items SET status = 'returned'
+    WHERE id = ?
+    """, (match["found_item_id"],))
 
     # UPDATE MATCH
     cursor.execute("""
-    UPDATE matches SET status='completed'
-    WHERE id=%s
-    """,(match_id,))
+    UPDATE matches SET status = 'completed'
+    WHERE id = ?
+    """, (match_id,))
 
     # UPDATE CLAIM
     cursor.execute("""
-    UPDATE claims SET status='approved'
-    WHERE match_id=%s
-    """,(match_id,))
+    UPDATE claims SET status = 'approved'
+    WHERE match_id = ?
+    """, (match_id,))
 
     db.commit()
 
     return redirect("/dashboard")
+
+
 @app.route("/chat-list")
 def chat_list():
 
@@ -695,19 +745,18 @@ def chat_list():
     )
     AND (
         m.lost_item_id IN (
-            SELECT id FROM items WHERE user_id=%s
+            SELECT id FROM items WHERE user_id = ?
         )
         OR
         m.found_item_id IN (
-            SELECT id FROM items WHERE user_id=%s
+            SELECT id FROM items WHERE user_id = ?
         )
     )
-    """,(user_id,user_id))
+    """, (user_id, user_id))
 
     chats = cursor.fetchall()
 
     return render_template("chat_list.html", chats=chats)
-
 
 
 # ================= RUN SERVER =================
@@ -719,4 +768,3 @@ def logout():
 
 if __name__ == "__main__":
     app.run(debug=True)
-
