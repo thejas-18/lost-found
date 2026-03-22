@@ -20,7 +20,7 @@ from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, session, jsonify
 from sentence_transformers import SentenceTransformer
 
-model = SentenceTransformer("model/all-MiniLM-L6-v2")
+model = SentenceTransformer("model/all-MiniLM-L6-v2", local_files_only=True)
 # AI modules
 from clip_engine import get_embedding, get_text_embedding, get_similarity
 
