@@ -1,0 +1,13 @@
+# Ignore model
+model/
+
+# Ignore uploads
+static/uploads/
+
+# Ignore cache
+__pycache__/
+*.pyc
+
+# Ignore database
+*.db
+*.sql

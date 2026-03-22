@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Active Chats</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+
+body{
+background:#0f1117;
+color:white;
+font-family:Arial;
+}
+
+.navbar{
+background:#151a23;
+border-bottom:1px solid #2a2f3a;
+}
+
+.chat-card{
+background:#1a1f2b;
+border:1px solid #2d3442;
+border-radius:14px;
+padding:22px;
+margin-bottom:18px;
+transition:0.2s;
+}
+
+.chat-card:hover{
+box-shadow:0 0 20px rgba(0,0,0,0.5);
+transform:translateY(-2px);
+}
+
+.item-title{
+font-weight:600;
+font-size:18px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav class="navbar navbar-dark px-3">
+
+<span class="navbar-brand fw-bold">
+💬 Active Chats
+</span>
+
+<a href="/dashboard" class="btn btn-outline-light btn-sm">
+Back
+</a>
+
+</nav>
+
+<div class="container mt-4">
+
+{% if chats %}
+
+{% for chat in chats %}
+
+<div class="chat-card d-flex justify-content-between align-items-center">
+
+<div class="item-title">
+{{ chat.title }}
+</div>
+
+<a href="/chat/{{ chat.match_id }}" class="btn btn-warning">
+Open Chat
+</a>
+
+</div>
+
+{% endfor %}
+
+{% else %}
+
+<div class="text-center mt-5">
+
+<h4>No active chats</h4>
+
+<p>
+Chats will appear here once a claim starts.
+</p>
+
+</div>
+
+{% endif %}
+
+</div>
+
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>Chat</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+
+body{
+background:#0f1117;
+color:white;
+font-family:Arial;
+}
+
+.navbar{
+background:#151a23;
+border-bottom:1px solid #2a2f3a;
+}
+
+.chat-box{
+height:450px;
+overflow-y:auto;
+background:#1a1f2b;
+border-radius:14px;
+padding:20px;
+border:1px solid #2d3442;
+box-shadow:0 0 15px rgba(0,0,0,0.4);
+}
+
+.msg-me{
+text-align:right;
+margin-bottom:12px;
+}
+
+.msg-other{
+text-align:left;
+margin-bottom:12px;
+}
+
+.bubble-me{
+display:inline-block;
+background:#ffc107;
+color:black;
+padding:10px 14px;
+border-radius:16px;
+box-shadow:0 2px 6px rgba(0,0,0,0.3);
+}
+
+.bubble-other{
+display:inline-block;
+background:#2d3442;
+padding:10px 14px;
+border-radius:16px;
+box-shadow:0 2px 6px rgba(0,0,0,0.3);
+}
+
+.chat-input{
+background:#1a1f2b;
+border:1px solid #2d3442;
+color:white;
+}
+
+input::placeholder{
+color:#aaa;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav class="navbar navbar-dark px-3">
+
+<span class="navbar-brand fw-bold">
+Chat - {{ item_name }}
+</span>
+
+<a href="/chat-list" class="btn btn-outline-light btn-sm">
+Back
+</a>
+
+</nav>
+
+
+<div class="container mt-4">
+
+<div class="chat-box">
+
+{% for c in chats %}
+
+{% if c.side == "me" %}
+
+<div class="msg-me">
+<span class="bubble-me">{{ c.message }}</span>
+</div>
+
+{% else %}
+
+<div class="msg-other">
+<span class="bubble-other">{{ c.message }}</span>
+</div>
+
+{% endif %}
+
+{% endfor %}
+
+</div>
+
+
+<form method="POST" class="mt-3">
+
+<div class="input-group">
+
+<input
+type="text"
+name="message"
+class="form-control chat-input"
+placeholder="Type message..."
+required>
+
+<button class="btn btn-warning">
+Send
+</button>
+
+</div>
+
+</form>
+
+
+{% if show_approval_buttons %}
+
+<div class="mt-4 text-center">
+
+<a href="/approve/{{ claim_id }}" class="btn btn-success me-2">
+Approve Claim
+</a>
+
+<a href="/reject/{{ claim_id }}" class="btn btn-danger">
+Reject Claim
+</a>
+
+</div>
+
+{% endif %}
+
+
+<div class="mt-4 text-center">
+
+<a href="/item-returned/{{ claim_id }}" class="btn btn-primary">
+Item Returned
+</a>
+
+</div>
+
+
+</div>
+
+</body>
+</html>
